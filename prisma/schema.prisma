@@ -1,0 +1,63 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+enum EmailStatus {
+  scheduled
+  processing
+  sent
+  failed
+}
+model Sender {
+  id String @id @default(cuid())
+  name String
+  email String @unique
+  active Boolean @default(true)
+  smtpConfigurationRef String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  schedules Schedule[]
+  emails Email[]
+  @@index([active])
+}
+model Schedule {
+  id String @id @default(cuid())
+  senderId String
+  idempotencyKey String @unique
+  delayBetweenEmailsMs Int
+  maxEmailsPerHour Int
+  startTime DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  sender Sender @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  emails Email[]
+  @@index([senderId, createdAt])
+}
+model Email {
+  id String @id @default(cuid())
+  scheduleId String
+  senderId String
+  recipientEmail String
+  subject String
+  body String
+  scheduledTime DateTime
+  sentTime DateTime?
+  status EmailStatus @default(scheduled)
+  attemptCount Int @default(0)
+  lastError String?
+  bullmqJobId String @unique
+  messageId String?
+  previewUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  sender Sender @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  @@unique([scheduleId, recipientEmail])
+  @@index([status, scheduledTime])
+  @@index([senderId, status, scheduledTime])
+}
