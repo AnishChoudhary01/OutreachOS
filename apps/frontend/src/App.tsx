@@ -1,0 +1,3 @@
+import { Navigate, Route, Routes } from 'react-router-dom'; import { Layout } from './components/Layout'; import { useAuth } from './context/AuthContext'; import { Dashboard } from './pages/Dashboard'; import { Login } from './pages/Login'; import { Spinner } from './components/ui';
+function Protected() { const { user, loading } = useAuth(); if (loading) return <div className="flex min-h-screen items-center justify-center bg-ink"><Spinner /></div>; return user ? <Layout><Dashboard /></Layout> : <Navigate to="/login" replace />; }
+export function App() { return <Routes><Route path="/login" element={<Login/>}/><Route path="/dashboard" element={<Protected/>}/><Route path="*" element={<Navigate to="/dashboard" replace/>}/></Routes>; }

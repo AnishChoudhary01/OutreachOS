@@ -3,6 +3,8 @@ import { stableJobId } from '../src/queues/emailQueue.js';
 import { scheduleSchema } from '../src/routes/emails.js';
 import { executionTimes, normalizeRecipients } from '../src/services/scheduling.js';
 import { isTransient } from '../src/workers/emailWorker.js';
+import { decryptSecret, encryptSecret, hashToken } from '../src/services/crypto.js';
+import { requireAuth } from '../src/middleware/auth.js';
 
 describe('schedule validation', () => {
   const valid = { senderId: 'sender-1', recipients: ['A@example.com'], subject: 'Subject', body: 'Body', startTime: '2026-12-20T10:00:00.000Z', delayBetweenEmailsMs: 2000, maxEmailsPerHour: 100, idempotencyKey: 'unique-key-1' };
@@ -18,4 +20,9 @@ describe('scheduling helpers', () => {
 
 describe('delivery failure classification', () => {
   it('retries transient transport failures and does not retry permanent failures', () => { expect(isTransient(new Error('SMTP 450 temporary failure'))).toBe(true); expect(isTransient(new Error('SMTP 550 mailbox unavailable'))).toBe(false); });
+});
+
+describe('authentication crypto helpers', () => {
+  it('round-trips encrypted integration tokens and hashes session tokens', () => { const value = 'xoxb-secret'; expect(decryptSecret(encryptSecret(value))).toBe(value); expect(hashToken('session')).toHaveLength(64); });
+  it('rejects unauthenticated requests at the middleware boundary', () => { const res = { status: (code: number) => ({ json: (body: unknown) => ({ code, body }) }) } as any; expect(requireAuth({} as any, res, () => undefined)).toEqual({ code: 401, body: { error: 'Authentication required' } }); });
 });

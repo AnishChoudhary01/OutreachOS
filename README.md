@@ -1,35 +1,268 @@
-# OutreachOS Phase 1
+# OutreachOS
 
-Phase 1 provides the backend core for persistent email scheduling. It includes Express, PostgreSQL/Prisma, Redis/BullMQ delayed jobs, an independent worker, Ethereal SMTP delivery, idempotent schedule creation, sender-scoped Redis rate limiting, and restart reconciliation.
+OutreachOS is a full-stack email scheduling and delivery platform. It uses PostgreSQL as the source of truth, Redis and BullMQ for durable delayed jobs, Ethereal SMTP for test delivery, Google OAuth for authentication, Slack for rate-limit notifications, Elasticsearch for search, and React/Vite for the dashboard.
 
-## Setup
+## Architecture
 
-1. Copy `.env.example` to `.env` and provide `DATABASE_URL`, Ethereal SMTP credentials, and any desired limits.
-2. Install dependencies and generate the Prisma client: `npm install && npm run prisma:generate`.
-3. Start services: `docker compose up -d`.
-4. Apply the migration: `npm run prisma:migrate`.
-5. Run API and worker separately: `npm run dev:api` and `npm run dev:worker`.
+```text
+apps/backend/src/
+├── routes/          Express API, OAuth, search, and sender routes
+├── services/        scheduling, SMTP, Slack, encryption, and Elasticsearch
+├── queues/          BullMQ and Redis connections
+├── workers/         delayed email processing and indexing recovery
+├── middleware/      sessions, authorization, and origin checks
+├── app.ts           Express application
+├── server.ts        API process
+└── worker.ts        background worker process
 
-The API defaults to `http://localhost:4000`. Health is `GET /api/health`.
+apps/frontend/src/
+├── components/      layout, tables, compose modal, and UI states
+├── context/         authenticated session state
+├── pages/           login and dashboard
+├── services/        typed Axios API client
+└── utils/           recipient parsing
+```
 
-## Scheduling API
+PostgreSQL stores users, sessions, senders, schedules, emails, Slack connections, and Elasticsearch outbox records. Redis stores BullMQ jobs, sender rate-limit state, and Slack notification deduplication. Elasticsearch is a non-authoritative search index.
 
-`POST /api/emails/schedule` accepts `senderId`, `recipients`, `subject`, `body`, an ISO `startTime` in the future, `delayBetweenEmailsMs`, `maxEmailsPerHour`, and an `idempotencyKey`. Recipients are normalized and deduplicated. The response returns the schedule ID, email IDs, and calculated execution times. Repeating an idempotent request returns the existing schedule.
+## Prerequisites
 
-`GET /api/emails/scheduled`, `GET /api/emails/sent`, and `GET /api/emails/:id` expose persisted records. List endpoints accept `page` and `limit`.
+- Node.js 22.11 or newer
+- npm
+- PostgreSQL 16
+- Redis 7
+- Elasticsearch 8.x for search
+- Google OAuth credentials for login
+- Slack OAuth credentials for Slack integration
+- Ethereal SMTP credentials for actual test delivery
 
-## Reliability notes
+Docker is recommended for PostgreSQL and Redis:
 
-The API persists the schedule and email rows before adding stable BullMQ jobs. The worker reconciles scheduled rows at startup using deterministic job IDs, so pending rows survive API/worker restarts. Processing claims a row before SMTP submission and checks the persisted status first. Transient SMTP failures are retried with bounded exponential backoff; permanent failures are recorded. Rows found in `processing` after a worker restart are marked failed for manual review rather than automatically resent, because their SMTP outcome is uncertain.
+```powershell
+docker compose up -d
+```
 
-Redis uses an atomic Lua script per sender to enforce both minimum spacing between actual attempts and a rolling one-hour window across workers. A denied reservation moves the BullMQ job to the next eligible time; it is not discarded. The effective hourly limit is capped by `MAX_EMAILS_PER_HOUR_PER_SENDER`.
+Start Elasticsearch separately if needed:
 
-SMTP acceptance and the PostgreSQL update are separate systems. Exactly-once delivery cannot be guaranteed if a process crashes after SMTP accepts a message but before PostgreSQL records `sent`; the persisted state checks, stable job IDs, and claim transition are practical duplicate-reduction safeguards, not a transactional guarantee.
+```powershell
+docker run --name outreachos-elasticsearch -p 9200:9200 `
+  -e discovery.type=single-node `
+  -e xpack.security.enabled=false `
+  docker.elastic.co/elasticsearch/elasticsearch:8.19.0
+```
 
-Slack, Google OAuth, Elasticsearch, Bull Board, and the frontend are intentionally deferred to later phases.
+## Configuration
 
-## Verification
+Copy the environment template:
 
-Run `npm run typecheck`, `npm test`, and `npm run build`. The default test run uses mocks/pure unit coverage; the PostgreSQL/Redis integration tests are skipped unless explicitly enabled. In PowerShell, run `$env:RUN_INTEGRATION_TESTS='true'; npm test -- apps/backend/tests/integration.test.ts` after the services are available. A live Ethereal delivery additionally requires configured credentials and running PostgreSQL/Redis.
+```powershell
+Copy-Item .env.example .env
+```
 
-Docker is the supported local service environment: `docker compose up -d`, followed by `npm run prisma:migrate`. If Docker is unavailable, provide PostgreSQL on `localhost:5432` with database `outreachos`, user `postgres`, password `postgres`, and Redis on `localhost:6379`, or update `.env` accordingly. Do not treat unit-test success as database, Redis, queue, or SMTP verification.
+Important variables include:
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `REDIS_HOST`, `REDIS_PORT` | Redis connection |
+| `WORKER_CONCURRENCY` | BullMQ worker concurrency |
+| `MIN_DELAY_BETWEEN_EMAILS_MS` | Sender-level minimum send spacing |
+| `MAX_EMAILS_PER_HOUR_PER_SENDER` | Effective sender hourly limit |
+| `ETHEREAL_*` | SMTP delivery configuration |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google OAuth credentials |
+| `GOOGLE_REDIRECT_URI` | Google callback URL |
+| `SESSION_SECRET` | Session configuration secret, at least 32 characters |
+| `FRONTEND_ORIGIN` | Credentialed frontend origin |
+| `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` | Slack OAuth credentials |
+| `SLACK_REDIRECT_URI` | Slack callback URL |
+| `SLACK_NOTIFICATION_CHANNEL` | Slack channel for rate-limit notifications |
+| `TOKEN_ENCRYPTION_KEY` | Encryption key for stored Slack tokens |
+| `ELASTICSEARCH_URL` | Elasticsearch endpoint |
+| `BULL_BOARD_ADMIN_EMAILS` | Comma-separated Bull Board administrators |
+| `VITE_API_URL` | Frontend API origin |
+
+Never commit `.env`, OAuth secrets, SMTP credentials, Slack tokens, or encryption keys.
+
+## Installation and database setup
+
+```powershell
+npm install
+npm run prisma:generate
+npm run prisma:migrate
+```
+
+The migrations are:
+
+- `prisma/migrations/0001_init`: Phase 1 scheduling schema
+- `prisma/migrations/0002_phase2`: users, sessions, OAuth state, Slack connections, ownership, and Elasticsearch outbox
+
+Existing Phase 1 records are assigned to a `legacy-owner` account during the Phase 2 migration when necessary.
+
+## Running the application
+
+Run the API, worker, and frontend in separate terminals:
+
+```powershell
+npm run dev:api
+npm run dev:worker
+npm run dev:frontend
+```
+
+Default addresses:
+
+- API: `http://localhost:4000`
+- Frontend: `http://localhost:5173`
+- Health: `GET http://localhost:4000/api/health`
+
+## Authentication
+
+Google login starts at:
+
+```text
+GET /api/auth/google
+```
+
+The callback is:
+
+```text
+GET /api/auth/google/callback
+```
+
+Configure the exact callback URL in Google Cloud Console. Sessions are opaque, stored as hashes in PostgreSQL, and sent in HTTP-only cookies. The frontend uses credentialed requests and does not store session tokens in local storage.
+
+Authentication endpoints:
+
+- `GET /api/auth/me`
+- `POST /api/auth/logout`
+
+All email, sender, search, and Slack management routes require authentication. Queries are scoped by the authenticated user's ownership ID.
+
+## Email scheduling API
+
+Schedule emails with:
+
+```http
+POST /api/emails/schedule
+Content-Type: application/json
+```
+
+```json
+{
+  "senderId": "sender-id",
+  "recipients": ["person@example.com"],
+  "subject": "OutreachOS test email",
+  "body": "This is a test email.",
+  "startTime": "2026-12-20T10:00:00.000Z",
+  "delayBetweenEmailsMs": 2000,
+  "maxEmailsPerHour": 100,
+  "idempotencyKey": "unique-request-key"
+}
+```
+
+Other endpoints:
+
+- `GET /api/senders`
+- `GET /api/emails/scheduled?page=1&limit=25`
+- `GET /api/emails/sent?page=1&limit=25`
+- `GET /api/emails/:id`
+
+Recipients are normalized and deduplicated. BullMQ job IDs are deterministic. PostgreSQL records are written before queue jobs are created, and the worker reconciles pending scheduled records after restart.
+
+Exactly-once SMTP delivery cannot be guaranteed because SMTP acceptance and PostgreSQL updates cannot share one transaction. If a worker crashes after SMTP acceptance but before recording `sent`, the record is marked for conservative manual review after restart rather than being blindly resent.
+
+## Slack integration
+
+Slack connection endpoints:
+
+- `GET /api/auth/slack`
+- `GET /api/auth/slack/callback`
+- `GET /api/auth/slack/connection`
+- `DELETE /api/auth/slack/:id`
+
+The application requests the `chat:write` scope. Configure a channel that the installed Slack bot can access using `SLACK_NOTIFICATION_CHANNEL`. When an hourly sender limit is reached, a Redis `SET NX` key deduplicates notifications across workers. Slack failures never block email scheduling.
+
+## Search and indexing
+
+Search emails through Elasticsearch:
+
+```text
+GET /api/search/emails?q=example.com&status=sent&page=1&limit=25
+```
+
+Search covers recipient and subject fields and is scoped to the authenticated user. Elasticsearch outages return a service-unavailable response while PostgreSQL records remain intact.
+
+Reindex the current user's records with:
+
+```text
+POST /api/search/emails/reindex
+```
+
+New records create PostgreSQL outbox rows. The worker retries pending outbox entries on startup. `POST /api/search/emails/reindex` is available for recovery and consistency repair.
+
+## Bull Board
+
+Bull Board is available at:
+
+```text
+http://localhost:4000/admin/queues
+```
+
+Access requires an authenticated user whose email appears in `BULL_BOARD_ADMIN_EMAILS`. The dashboard exposes the real BullMQ queue, including waiting, delayed, active, completed, and failed jobs. Keep the allowlist empty unless queue monitoring is intentionally enabled.
+
+## Frontend
+
+The React dashboard provides:
+
+- Google sign-in and session restoration
+- Scheduled and sent email tabs
+- Server-backed search and pagination
+- Responsive email tables with loading and empty states
+- CSV/text recipient upload and validation
+- Sender selection
+- Scheduling controls for start time, delay, and hourly limits
+- Slack connection status and disconnect controls
+- Protected Bull Board access
+
+The compose form accepts whitespace-, comma-, and semicolon-separated addresses. CSV files should include a column containing recipient email addresses. The browser never sends email directly; it submits schedules to the backend.
+
+## Testing and verification
+
+Backend checks:
+
+```powershell
+npm run lint
+npm run typecheck
+npm run build
+npm test
+```
+
+Frontend checks:
+
+```powershell
+npm run typecheck:frontend
+npm run build:frontend
+```
+
+Prisma checks:
+
+```powershell
+npx prisma validate
+npm run prisma:generate
+```
+
+Service-backed integration tests are opt-in:
+
+```powershell
+$env:RUN_INTEGRATION_TESTS='true'
+npm test -- apps/backend/tests/integration.test.ts
+```
+
+The deterministic test suite covers scheduling validation, recipient normalization, stable job IDs, SMTP failure classification, encryption helpers, authentication middleware, and frontend recipient parsing. PostgreSQL, Redis, Elasticsearch, OAuth, Slack, and SMTP tests require the corresponding services and valid credentials.
+
+## Known limitations
+
+- Live Google OAuth, Slack delivery, Elasticsearch, PostgreSQL, Redis, BullMQ, and Ethereal delivery require external configuration and were not verified in this environment.
+- The supplied Figma URL was inaccessible through the available inspection tool, so the frontend is a polished approximation rather than a pixel-verified reproduction.
+- Bull Board requires the administrator email allowlist to be configured explicitly.
+- Elasticsearch indexing is eventually consistent and depends on worker startup recovery or manual reindexing.
+- The frontend uses pagination and does not attempt to render thousands of email rows at once. Actual delivery of 1,000 emails through Ethereal is not required.

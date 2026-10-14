@@ -1,0 +1,5 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+@layer base { body { @apply bg-ink text-slate-100 antialiased; font-family: Inter, ui-sans-serif, system-ui, sans-serif; } * { scrollbar-color: #33415f #0b1020; } }
+@layer components { .surface { @apply rounded-2xl border border-line bg-panel shadow-glow; } .field { @apply w-full rounded-xl border border-line bg-[#0c1426] px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-aqua/70 focus:ring-2 focus:ring-aqua/10; } .primary { @apply rounded-xl bg-aqua px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-[#a4f7e3] disabled:cursor-not-allowed disabled:opacity-50; } .ghost { @apply rounded-xl border border-line px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-white; } }

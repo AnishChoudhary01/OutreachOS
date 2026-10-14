@@ -19,13 +19,14 @@ describe.skipIf(!enabled)('Phase 1 PostgreSQL/Redis integration', () => {
 
   it('deduplicates concurrent idempotent schedule requests', async () => {
     const { scheduleEmails } = await import('../src/services/scheduling.js');
-    const sender = await prisma.sender.create({ data: { name: 'Integration Sender', email: `${randomUUID()}@example.com` } });
+    const owner = await prisma.user.create({ data: { email: `${randomUUID()}@example.com`, name: 'Integration User' } });
+    const sender = await prisma.sender.create({ data: { name: 'Integration Sender', email: `${randomUUID()}@example.com`, ownerId: owner.id } });
     try {
-      const input = { senderId: sender.id, recipients: [`${randomUUID()}@example.com`], subject: 'Integration', body: 'Integration', startTime: new Date(Date.now() + 3600000), delayBetweenEmailsMs: 1000, maxEmailsPerHour: 10, idempotencyKey: `integration-${randomUUID()}` };
+      const input = { ownerId: sender.ownerId, senderId: sender.id, recipients: [`${randomUUID()}@example.com`], subject: 'Integration', body: 'Integration', startTime: new Date(Date.now() + 3600000), delayBetweenEmailsMs: 1000, maxEmailsPerHour: 10, idempotencyKey: `integration-${randomUUID()}` };
       const results = await Promise.all([scheduleEmails(input), scheduleEmails(input)]);
       expect(results[0].id).toBe(results[1].id);
       expect(await prisma.schedule.count({ where: { idempotencyKey: input.idempotencyKey } })).toBe(1);
-    } finally { await prisma.sender.delete({ where: { id: sender.id } }); }
+    } finally { await prisma.user.delete({ where: { id: owner.id } }); }
   });
 
   it('enforces a sender hourly limit across concurrent reservations', async () => {

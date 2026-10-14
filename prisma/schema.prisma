@@ -13,16 +13,83 @@ enum EmailStatus {
   sent
   failed
 }
+enum OAuthProvider {
+  google
+  slack
+}
+model User {
+  id String @id @default(cuid())
+  googleId String? @unique
+  email String @unique
+  name String
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  sessions Session[]
+  oauthStates OAuthState[]
+  senders Sender[]
+  schedules Schedule[]
+  emails Email[]
+  slackConnections SlackConnection[]
+  outbox EmailIndexOutbox[]
+}
+model Session {
+  id String @id @default(cuid())
+  tokenHash String @unique
+  userId String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, expiresAt])
+}
+model OAuthState {
+  id String @id @default(cuid())
+  stateHash String @unique
+  provider OAuthProvider
+  userId String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([provider, expiresAt])
+}
+model SlackConnection {
+  id String @id @default(cuid())
+  userId String
+  teamId String
+  teamName String?
+  encryptedAccessToken String
+  botUserId String?
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([userId, teamId])
+  @@index([userId, active])
+}
+model EmailIndexOutbox {
+  id String @id @default(cuid())
+  userId String
+  emailId String
+  operation String @default("upsert")
+  attempts Int @default(0)
+  lastError String?
+  processedAt DateTime?
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([processedAt, createdAt])
+}
 model Sender {
   id String @id @default(cuid())
   name String
   email String @unique
   active Boolean @default(true)
   smtpConfigurationRef String?
+  ownerId String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   schedules Schedule[]
   emails Email[]
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   @@index([active])
 }
 model Schedule {
@@ -32,10 +99,12 @@ model Schedule {
   delayBetweenEmailsMs Int
   maxEmailsPerHour Int
   startTime DateTime
+  ownerId String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   sender Sender @relation(fields: [senderId], references: [id], onDelete: Restrict)
   emails Email[]
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   @@index([senderId, createdAt])
 }
 model Email {
@@ -53,11 +122,14 @@ model Email {
   bullmqJobId String @unique
   messageId String?
   previewUrl String?
+  ownerId String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
   sender Sender @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   @@unique([scheduleId, recipientEmail])
   @@index([status, scheduledTime])
   @@index([senderId, status, scheduledTime])
+  @@index([ownerId, status, scheduledTime])
 }
